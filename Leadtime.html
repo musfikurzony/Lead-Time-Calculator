@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dynamic Lead Time Calculator</title>
+  <style>
+    :root{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;}
+    body{max-width:980px;margin:28px auto;padding:18px;background:#f7fafc;border-radius:10px;color:#0f172a}
+    h1{font-size:22px;margin:0 0 8px}
+    .card{background:white;padding:16px;border-radius:10px;box-shadow:0 6px 20px rgba(11,12,16,.06);margin-bottom:14px}
+    label{display:block;margin-bottom:6px;font-weight:600}
+    input[type=date], input[type=number], select, input[type=text]{width:100%;padding:8px;border:1px solid #e6e9ee;border-radius:6px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .row{display:flex;gap:10px;align-items:center}
+    button{background:#0ea5a4;border:none;color:white;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button.secondary{background:#64748b}
+    .output .line{display:flex;justify-content:space-between;padding:10px;border-bottom:1px dashed #eef2f7;flex-direction:column}
+    small{color:#475569}
+    .hol-list{margin-top:8px}
+    .hol-item{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+    .muted{color:#687076;font-size:13px}
+    .note{background:#fff7ed;padding:10px;border-left:4px solid #f59e0b;border-radius:6px;margin-top:8px}
+    .settings-btn{float:right}
+    .flex{display:flex;gap:8px}
+    .badge{background:#eef2ff;color:#1e3a8a;padding:4px 8px;border-radius:999px;font-weight:600}
+    .small{font-size:13px}
+    footer{margin-top:16px;text-align:center;color:#475569}
+    .holiday-overlap{color:#b91c1c}
+    @media(max-width:720px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+
+  <!-- Forward Planning Section -->
+  <div class="card">
+    <h3>Forward Planning</h3>
+    <label for="orderDate">Order Due Date</label>
+    <input id="orderDate" type="date">
+    <div style="margin-top:10px" class="grid">
+      <div><label>Order → Fabric ETD (days)</label><input id="d1" type="number" min="0" value="60"></div>
+      <div><label>Fabric ETD → Fabric In-house (days)</label><input id="d2" type="number" min="0" value="30"></div>
+      <div><label>Fabric In-house → ETD ex-BD (production days)</label><input id="d3" type="number" min="0" value="45"></div>
+      <div><label>ETD → ETA USA (sea transit days)</label><input id="d4" type="number" min="0" value="60"></div>
+      <div><label>ETA USA → CDD (delivery days)</label><input id="d5" type="number" min="0" value="14"></div>
+    </div>
+    <div style="margin-top:12px" class="flex">
+      <button id="calculateForward">Calculate Forward</button>
+      <button id="clearForward" class="secondary">Clear</button>
+    </div>
+  </div>
+
+  <!-- Results Section -->
+  <div class="card output" id="results">
+    <h3>Results</h3>
+    <div id="resLines"></div>
+    <div id="notes" style="margin-top:8px"></div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function(){
+      const resLines=document.getElementById('resLines');
+      const notes=document.getElementById('notes');
+
+      function fmt(d){ if(!d) return ''; const day=String(d.getDate()).padStart(2,'0'); const mon=String(d.getMonth()+1).padStart(2,'0'); const yr=d.getFullYear(); return `${day}/${mon}/${yr}`; }
+      function parseDate(s){ return s?new Date(s+'T00:00:00'):null }
+      function addDays(date,days){ const d=new Date(date); d.setDate(d.getDate()+days); return d }
+      function daysBetween(a,b){ return Math.round((b-a)/(24*60*60*1000)); }
+
+      function adjustToBusinessDays(date, daysOfWeekAllowed){
+        const d=new Date(date);
+        while(!daysOfWeekAllowed.includes(d.getDay())){
+          d.setDate(d.getDate()+1);
+        }
+        return d;
+      }
+
+      function overlapDays(rangeStart, rangeEnd, holStart, holEnd){
+        const s1=new Date(rangeStart), e1=new Date(rangeEnd);
+        const s2=new Date(holStart), e2=new Date(holEnd);
+        const s=s1>s2?s1:s2; const e=e1<e2?e1:e2;
+        if(e<s) return 0;
+        return daysBetween(s,e)+1;
+      }
+
+      let settings={
+        durations:{d1:60,d2:30,d3:45,d4:60,d5:14},
+        holidays:[
+          {name:'1st Eid 2026', start:'2026-03-18', end:'2026-03-29'},
+          {name:'2nd Eid 2026', start:'2026-05-23', end:'2026-05-31'},
+          {name:'CNY 2026', start:'2026-02-03', end:'2026-03-03'}
+        ]
+      };
+
+      function compute(orderDateStr, settings){
+        let orderDue=parseDate(orderDateStr);
+        if(!orderDue) return null;
+        let notesArr=[];
+
+        // Adjust Order Due to Mon-Fri
+        orderDue=adjustToBusinessDays(orderDue,[1,2,3,4,5]);
+
+        let step1_extra=0;
+        const chinaHols=settings.holidays.filter(h=>/CNY|October|Oct/i.test(h.name));
+        let fabETD=addDays(orderDue,settings.durations.d1);
+        chinaHols.forEach(h=>{
+          const overlap=overlapDays(fmt(orderDue).split('/').reverse().join('-'), fmt(fabETD).split('/').reverse().join('-'), h.start,h.end);
+          if(overlap>0) notesArr.push(`Holiday impact on Order→Fabric ETD: ${h.name} (${fmt(new Date(h.start))} → ${fmt(new Date(h.end))})`);
+          step1_extra+=overlap;
+        });
+        fabETD=addDays(fabETD,step1_extra);
+
+        let fabInhouse=addDays(fabETD,settings.durations.d2);
+        fabInhouse=adjustToBusinessDays(fabInhouse,[0,1,2,3,4]); // Sun-Thu
+
+        let prodEnd=addDays(fabInhouse,settings.durations.d3);
+        // ETD ex-BD must be Sunday
+        let prodEndAdj=new Date(prodEnd);
+        prodEndAdj.setDate(prodEnd.getDate() + (7 - prodEnd.getDay())%7);
+
+        const eta=addDays(prodEndAdj,settings.durations.d4);
+        const cdd=addDays(eta,settings.durations.d5);
+
+        return {orderDue,fabETD,fabInhouse,prodEnd:prodEndAdj,eta,cdd,notes:notesArr};
+      }
+
+      document.getElementById('calculateForward').onclick=()=>{
+        const od=document.getElementById('orderDate').value;
+        if(!od){ alert('Enter Order Due Date'); return; }
+        const out=compute(od,settings);
+        if(!out) return;
+
+        resLines.innerHTML=`<div class='line'>
+          <strong>Critical Path Dates:</strong><br>
+          Order Due: ${fmt(out.orderDue)}<br>
+          Fabric ETD: ${fmt(out.fabETD)}<br>
+          Fabric In-house: ${fmt(out.fabInhouse)}<br>
+          ETD ex-BD (Sunday vessel): ${fmt(out.prodEnd)}<br>
+          ETA USA: ${fmt(out.eta)}<br>
+          Customer Delivery Date: ${fmt(out.cdd)}
+        </div>`;
+
+        notes.innerHTML='';
+        if(out.notes.length>0){
+          notes.innerHTML=`<div class='note'><strong>Notes / Holiday Impacts:</strong><ul>${out.notes.map(n=>`<li>${n}</li>`).join('')}</ul></div>`;
+        }
+      };
+
+      document.getElementById('clearForward').onclick=()=>{document.getElementById('orderDate').value=''; resLines.innerHTML=''; notes.innerHTML='';};
+
+    });
+  </script>
+</body>
+</html>
